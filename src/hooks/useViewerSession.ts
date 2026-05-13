@@ -1,0 +1,112 @@
+import { trpc } from "@/providers/trpc";
+import { useCallback, useMemo } from "react";
+import { useNavigate } from "react-router";
+
+type ViewerSession =
+  | {
+      kind: "candidate";
+      id: number;
+      name: string;
+      email: string;
+      isAmbassador: boolean;
+      studyStatus?: string;
+    }
+  | {
+      kind: "site-user";
+      id: number;
+      name: string;
+      email?: string | null;
+      isAmbassador: false;
+      role?: string;
+    };
+
+export function useViewerSession() {
+  const utils = trpc.useUtils();
+  const navigate = useNavigate();
+
+  const candidateQuery = trpc.candidateAuth.me.useQuery(undefined, {
+    staleTime: 1000 * 60 * 5,
+    retry: false,
+  });
+
+  const authQuery = trpc.auth.me.useQuery(undefined, {
+    staleTime: 1000 * 60 * 5,
+    retry: false,
+  });
+
+  const candidateLogout = trpc.candidateAuth.logout.useMutation({
+    onSuccess: async () => {
+      await utils.invalidate();
+    },
+  });
+
+  const authLogout = trpc.auth.logout.useMutation({
+    onSuccess: async () => {
+      await utils.invalidate();
+    },
+  });
+
+  const adminLogout = trpc.adminAuth.logout.useMutation({
+    onSuccess: async () => {
+      await utils.invalidate();
+    },
+  });
+
+  const viewer = useMemo<ViewerSession | null>(() => {
+    if (candidateQuery.data) {
+      return {
+        kind: "candidate",
+        id: candidateQuery.data.id,
+        name: `${candidateQuery.data.firstName} ${candidateQuery.data.lastName}`.trim(),
+        email: candidateQuery.data.email,
+        isAmbassador: candidateQuery.data.isAmbassador,
+        studyStatus: candidateQuery.data.studyStatus,
+      };
+    }
+
+    if (authQuery.data) {
+      return {
+        kind: "site-user",
+        id: authQuery.data.id,
+        name: authQuery.data.name || authQuery.data.email || authQuery.data.unionId,
+        email: authQuery.data.email,
+        role: authQuery.data.role,
+        isAmbassador: false,
+      };
+    }
+
+    return null;
+  }, [candidateQuery.data, authQuery.data]);
+
+  const logout = useCallback(() => {
+    void (async () => {
+      await Promise.allSettled([
+        candidateLogout.mutateAsync(),
+        authLogout.mutateAsync(),
+        adminLogout.mutateAsync(),
+      ]);
+
+      utils.candidateAuth.me.setData(undefined, undefined);
+      utils.auth.me.setData(undefined, undefined);
+      await utils.invalidate();
+      navigate("/");
+    })();
+  }, [candidateLogout, authLogout, adminLogout, utils, navigate]);
+
+  return {
+    viewer,
+    isAmbassador: viewer?.kind === "candidate" && viewer.isAmbassador,
+    hasAmbassadorView:
+      (viewer?.kind === "candidate" && viewer.isAmbassador) ||
+      (viewer?.kind === "site-user" && viewer.role === "admin"),
+    isCandidate: viewer?.kind === "candidate" && !viewer.isAmbassador,
+    isAuthenticated: !!viewer,
+    isLoading:
+      candidateQuery.isLoading ||
+      authQuery.isLoading ||
+      candidateLogout.isPending ||
+      authLogout.isPending ||
+      adminLogout.isPending,
+    logout,
+  };
+}
